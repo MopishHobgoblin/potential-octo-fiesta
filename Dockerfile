@@ -54,7 +54,7 @@ RUN set -eux; \
 
 # --- Moodle code --------------------------------------------------------------
 COPY build/fetch-moodle.sh /usr/local/lib/moodle/build/fetch-moodle.sh
-RUN bash /usr/local/lib/moodle/build/fetch-moodle.sh "${MOODLE_DOWNLOAD_URL}"
+RUN bash /usr/local/lib/moodle/build/fetch-moodle.sh
 
 # --- Base system tweaks -------------------------------------------------------
 # * www-data's home is moved away from /var/www, otherwise `usermod -u` (PUID)
