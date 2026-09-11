@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Runs Moodle's cron.php every MOODLE_CRON_INTERVAL seconds (started by supervisord as www-data).
+set -uo pipefail
+# shellcheck source=/usr/local/lib/moodle/common.sh
+source /usr/local/lib/moodle/common.sh
+
+CLI="$(moodle_cli_dir)" || { log "cron: admin/cli not found"; sleep 60; exit 1; }
+INTERVAL="${MOODLE_CRON_INTERVAL:-60}"
+LAST_LOG=/tmp/moodle-cron-last.log
+
+sleep 20   # let php-fpm, the database and redis settle first
+log "cron: running every ${INTERVAL}s (set MOODLE_CRON_VERBOSE=true to stream output)"
+
+while true; do
+    started=$(date +%s)
+    if is_true "${MOODLE_CRON_VERBOSE:-false}"; then
+        php "$CLI/cron.php"
+        rc=$?
+    else
+        php "$CLI/cron.php" > "$LAST_LOG" 2>&1
+        rc=$?
+        if (( rc != 0 )); then
+            log "cron: cron.php exited with code $rc - last 40 lines:"
+            tail -n 40 "$LAST_LOG" >&2
+        fi
+    fi
+    elapsed=$(( $(date +%s) - started ))
+    if (( elapsed < INTERVAL )); then sleep $(( INTERVAL - elapsed )); fi
+done

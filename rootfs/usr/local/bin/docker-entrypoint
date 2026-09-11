@@ -1,0 +1,421 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  Moodle all-in-one entrypoint
+#   1. Validate settings, apply runtime config (PHP, PHP-FPM, nginx, MariaDB, Redis)
+#   2. Copy add-on plugins from /config/plugins into the code tree
+#   3. Generate config.php from environment variables
+#   4. Start bundled MariaDB temporarily (if used) and install / upgrade Moodle
+#   5. Hand over to supervisord
+# =============================================================================
+set -Eeuo pipefail
+# shellcheck source=/usr/local/lib/moodle/common.sh
+source /usr/local/lib/moodle/common.sh
+
+# `docker run --rm -it <image> bash` for debugging.
+if [[ $# -gt 0 ]]; then exec "$@"; fi
+
+# -----------------------------------------------------------------------------
+# Settings (exported so PHP helpers and supervisord children can read them)
+# -----------------------------------------------------------------------------
+export TZ="${TZ:-UTC}"
+export MOODLE_URL="${MOODLE_URL:-}"
+export MOODLE_SSLPROXY="${MOODLE_SSLPROXY:-auto}"
+export MOODLE_SITE_FULLNAME="${MOODLE_SITE_FULLNAME:-Moodle LMS}"
+export MOODLE_SITE_SHORTNAME="${MOODLE_SITE_SHORTNAME:-Moodle}"
+export MOODLE_SITE_SUMMARY="${MOODLE_SITE_SUMMARY:-}"
+export MOODLE_LANG="${MOODLE_LANG:-en}"
+export MOODLE_ADMIN_USER="${MOODLE_ADMIN_USER:-admin}"
+export MOODLE_ADMIN_PASSWORD="${MOODLE_ADMIN_PASSWORD:-}"
+export MOODLE_ADMIN_EMAIL="${MOODLE_ADMIN_EMAIL:-admin@example.com}"
+export MOODLE_SUPPORT_EMAIL="${MOODLE_SUPPORT_EMAIL:-$MOODLE_ADMIN_EMAIL}"
+export MOODLE_DB_TYPE="${MOODLE_DB_TYPE:-mariadb}"
+export MOODLE_DB_HOST="${MOODLE_DB_HOST:-127.0.0.1}"
+export MOODLE_DB_NAME="${MOODLE_DB_NAME:-moodle}"
+export MOODLE_DB_USER="${MOODLE_DB_USER:-moodle}"
+export MOODLE_DB_PASSWORD="${MOODLE_DB_PASSWORD:-}"
+export MOODLE_DB_PREFIX="${MOODLE_DB_PREFIX:-mdl_}"
+export MOODLE_DB_WAIT_TIMEOUT="${MOODLE_DB_WAIT_TIMEOUT:-180}"
+export MARIADB_INNODB_BUFFER_POOL_SIZE="${MARIADB_INNODB_BUFFER_POOL_SIZE:-512M}"
+export MOODLE_REDIS_ENABLED="${MOODLE_REDIS_ENABLED:-true}"
+export MOODLE_REDIS_HOST="${MOODLE_REDIS_HOST:-127.0.0.1}"
+export MOODLE_REDIS_PORT="${MOODLE_REDIS_PORT:-6379}"
+export MOODLE_REDIS_PASSWORD="${MOODLE_REDIS_PASSWORD:-}"
+export REDIS_MAXMEMORY="${REDIS_MAXMEMORY:-256mb}"
+export MOODLE_AUTO_UPGRADE="${MOODLE_AUTO_UPGRADE:-true}"
+export MOODLE_ALLOW_WEB_PLUGIN_INSTALL="${MOODLE_ALLOW_WEB_PLUGIN_INSTALL:-false}"
+export MOODLE_PLUGIN_SYNC_INTERVAL="${MOODLE_PLUGIN_SYNC_INTERVAL:-300}"
+export MOODLE_CRON_ENABLED="${MOODLE_CRON_ENABLED:-true}"
+export MOODLE_CRON_INTERVAL="${MOODLE_CRON_INTERVAL:-60}"
+export MOODLE_CRON_VERBOSE="${MOODLE_CRON_VERBOSE:-false}"
+export PHP_MEMORY_LIMIT="${PHP_MEMORY_LIMIT:-512M}"
+export PHP_UPLOAD_MAX_FILESIZE="${PHP_UPLOAD_MAX_FILESIZE:-256M}"
+export PHP_MAX_EXECUTION_TIME="${PHP_MAX_EXECUTION_TIME:-300}"
+export PHP_FPM_MAX_CHILDREN="${PHP_FPM_MAX_CHILDREN:-20}"
+export NGINX_ACCESS_LOG="${NGINX_ACCESS_LOG:-false}"
+
+if [[ -z "${MOODLE_DB_PORT:-}" ]]; then
+    if [[ "$MOODLE_DB_TYPE" == "pgsql" ]]; then MOODLE_DB_PORT=5432; else MOODLE_DB_PORT=3306; fi
+fi
+export MOODLE_DB_PORT
+
+log "Moodle $(moodle_release) all-in-one container starting"
+
+# -----------------------------------------------------------------------------
+# Validation
+# -----------------------------------------------------------------------------
+[[ -n "$MOODLE_URL" ]] || die "MOODLE_URL is required, e.g. http://192.168.1.50:8080 or https://moodle.example.com"
+MOODLE_URL="${MOODLE_URL%/}"
+[[ "$MOODLE_URL" =~ ^https?://[^/]+$ ]] \
+    || die "MOODLE_URL must be scheme://host[:port] without a sub-path (got '$MOODLE_URL')"
+
+case "$MOODLE_DB_TYPE" in
+    mariadb|mysqli|pgsql) ;;
+    *) die "MOODLE_DB_TYPE must be one of: mariadb, mysqli, pgsql" ;;
+esac
+[[ "$MOODLE_DB_NAME" =~ ^[A-Za-z0-9_]+$ ]] || die "MOODLE_DB_NAME may only contain letters, digits and underscores"
+[[ "$MOODLE_DB_USER" =~ ^[A-Za-z0-9_]+$ ]] || die "MOODLE_DB_USER may only contain letters, digits and underscores"
+[[ "$MOODLE_DB_PREFIX" =~ ^[a-z][a-z0-9_]{0,9}$ ]] \
+    || die "MOODLE_DB_PREFIX must start with a lowercase letter and be at most 10 characters"
+for v in MOODLE_DB_PORT MOODLE_REDIS_PORT MOODLE_CRON_INTERVAL PHP_MAX_EXECUTION_TIME PHP_FPM_MAX_CHILDREN \
+         MOODLE_DB_WAIT_TIMEOUT MOODLE_PLUGIN_SYNC_INTERVAL; do
+    [[ "${!v}" =~ ^[0-9]+$ ]] || die "$v must be a whole number (got '${!v}')"
+done
+[[ "$PHP_MEMORY_LIMIT" =~ ^[0-9]+[KMGkmg]?$ ]] || die "PHP_MEMORY_LIMIT must look like 512M"
+[[ "$PHP_UPLOAD_MAX_FILESIZE" =~ ^[0-9]+[KMGkmg]?$ ]] || die "PHP_UPLOAD_MAX_FILESIZE must look like 256M"
+
+USE_INTERNAL_DB=false
+if is_local_host "$MOODLE_DB_HOST"; then
+    USE_INTERNAL_DB=true
+    [[ "$MOODLE_DB_TYPE" == "mariadb" ]] \
+        || die "The bundled database is MariaDB: use MOODLE_DB_TYPE=mariadb, or point MOODLE_DB_HOST at an external server"
+    export MOODLE_DB_HOST=127.0.0.1 MOODLE_DB_PORT=3306
+fi
+
+USE_INTERNAL_REDIS=false
+if is_true "$MOODLE_REDIS_ENABLED" && is_local_host "$MOODLE_REDIS_HOST"; then
+    USE_INTERNAL_REDIS=true
+    export MOODLE_REDIS_HOST=127.0.0.1
+fi
+
+CLI="$(moodle_cli_dir)" || die "Could not find Moodle's admin/cli directory under $MOODLE_ROOT"
+WEBROOT="$(moodle_webroot)"
+
+# -----------------------------------------------------------------------------
+# Timezone, user IDs and directories
+# -----------------------------------------------------------------------------
+if ! php -r 'exit(in_array(getenv("TZ"), DateTimeZone::listIdentifiers(), true) ? 0 : 1);'; then
+    warn "Unknown TZ '$TZ', falling back to UTC"
+    export TZ=UTC
+fi
+ln -snf "/usr/share/zoneinfo/$TZ" /etc/localtime 2>/dev/null || true
+
+if [[ -n "${PGID:-}" && "$PGID" != "$(id -g www-data)" ]]; then
+    log "Setting www-data GID to $PGID"
+    groupmod -o -g "$PGID" www-data
+fi
+if [[ -n "${PUID:-}" && "$PUID" != "$(id -u www-data)" ]]; then
+    log "Setting www-data UID to $PUID"
+    usermod -o -u "$PUID" www-data
+fi
+
+mkdir -p "$CONFIG_DIR/plugins" "$MOODLE_DATA"
+install -d -m 0700 "$CONFIG_DIR/secrets"
+if [[ "$(stat -c '%u:%g' "$MOODLE_DATA")" != "$(id -u www-data):$(id -g www-data)" ]]; then
+    log "Fixing ownership of $MOODLE_DATA (may take a while on large sites)"
+    chown -R www-data:www-data "$MOODLE_DATA"
+fi
+chmod 2775 "$MOODLE_DATA"
+
+# -----------------------------------------------------------------------------
+# Runtime configuration files
+# -----------------------------------------------------------------------------
+cat > /usr/local/etc/php/conf.d/zz-moodle.ini <<EOF
+; Generated by docker-entrypoint - edit environment variables instead.
+memory_limit = ${PHP_MEMORY_LIMIT}
+upload_max_filesize = ${PHP_UPLOAD_MAX_FILESIZE}
+post_max_size = ${PHP_UPLOAD_MAX_FILESIZE}
+max_execution_time = ${PHP_MAX_EXECUTION_TIME}
+max_input_time = ${PHP_MAX_EXECUTION_TIME}
+max_input_vars = 5000
+date.timezone = ${TZ}
+expose_php = Off
+file_uploads = On
+session.auto_start = 0
+
+opcache.enable = 1
+opcache.enable_cli = 0
+opcache.memory_consumption = 256
+opcache.interned_strings_buffer = 16
+opcache.max_accelerated_files = 20000
+opcache.revalidate_freq = 60
+opcache.validate_timestamps = 1
+opcache.use_cwd = 1
+opcache.save_comments = 1
+opcache.enable_file_override = 0
+EOF
+
+max_spare=$(( PHP_FPM_MAX_CHILDREN < 8 ? PHP_FPM_MAX_CHILDREN : 8 ))
+start_servers=$(( max_spare < 4 ? max_spare : 4 ))
+min_spare=$(( start_servers < 2 ? start_servers : 2 ))
+cat > /usr/local/etc/php-fpm.d/zz-moodle.conf <<EOF
+; Generated by docker-entrypoint
+[www]
+user = www-data
+group = www-data
+listen = 127.0.0.1:9000
+pm = dynamic
+pm.max_children = ${PHP_FPM_MAX_CHILDREN}
+pm.start_servers = ${start_servers}
+pm.min_spare_servers = ${min_spare}
+pm.max_spare_servers = ${max_spare}
+pm.max_requests = 1000
+ping.path = /fpm-ping
+ping.response = pong
+catch_workers_output = yes
+decorate_workers_output = no
+security.limit_extensions = .php
+EOF
+
+access_log="off"
+if is_true "$NGINX_ACCESS_LOG"; then access_log="/dev/stdout"; fi
+cat > /etc/nginx/conf.d/00-runtime.conf <<EOF
+# Generated by docker-entrypoint
+client_max_body_size ${PHP_UPLOAD_MAX_FILESIZE};
+# Generous: Moodle raises its own time limit for backups/restores and streams progress.
+fastcgi_read_timeout 3600s;
+access_log ${access_log};
+EOF
+
+if [[ "$USE_INTERNAL_DB" == true ]]; then
+    cat > /etc/mysql/mariadb.conf.d/99-moodle.cnf <<EOF
+# Generated by docker-entrypoint
+[mysqld]
+bind-address            = 127.0.0.1
+port                    = 3306
+skip-name-resolve
+character-set-server    = utf8mb4
+collation-server        = utf8mb4_unicode_ci
+innodb_file_per_table   = ON
+innodb_buffer_pool_size = ${MARIADB_INNODB_BUFFER_POOL_SIZE}
+max_allowed_packet      = 256M
+EOF
+fi
+
+if [[ "$USE_INTERNAL_REDIS" == true ]]; then
+    cat > /etc/redis/moodle.conf <<EOF
+# Generated by docker-entrypoint (sessions only, no persistence)
+bind 127.0.0.1
+port 6379
+protected-mode yes
+daemonize no
+save ""
+appendonly no
+maxmemory ${REDIS_MAXMEMORY}
+maxmemory-policy volatile-lru
+dir /var/lib/redis
+logfile ""
+EOF
+fi
+
+nginx -t -q || die "nginx configuration test failed"
+php-fpm -t >/dev/null 2>&1 || { php-fpm -t; die "PHP-FPM configuration test failed"; }
+
+# -----------------------------------------------------------------------------
+# Secrets
+# -----------------------------------------------------------------------------
+ensure_secret() {
+    local file="$CONFIG_DIR/secrets/$1"
+    if [[ ! -s "$file" ]]; then
+        # Satisfies Moodle's default password policy (upper, lower, digit, symbol).
+        ( umask 077; php -r 'echo "Mdl", bin2hex(random_bytes(12)), "#7";' > "$file" )
+        log "Generated $1 and saved it to $file"
+    fi
+    cat "$file"
+}
+
+if [[ -z "$MOODLE_DB_PASSWORD" ]]; then
+    [[ "$USE_INTERNAL_DB" == true ]] || die "MOODLE_DB_PASSWORD is required when using an external database"
+    MOODLE_DB_PASSWORD="$(ensure_secret db_password)"
+    export MOODLE_DB_PASSWORD
+fi
+
+# -----------------------------------------------------------------------------
+# Code tree: add-on plugins + config.php
+# -----------------------------------------------------------------------------
+# Add-on plugins are owned by www-data only in web-install mode, so that the
+# Moodle updater can replace them; otherwise the whole code tree stays read-only.
+PLUGIN_OWNER="root:root"
+if is_true "$MOODLE_ALLOW_WEB_PLUGIN_INSTALL"; then PLUGIN_OWNER="www-data:www-data"; fi
+
+if [[ -n "$(ls -A "$CONFIG_DIR/plugins" 2>/dev/null)" ]]; then
+    log "Copying add-on plugins from $CONFIG_DIR/plugins into $WEBROOT"
+    rsync -rlt --exclude='.git' --chown="$PLUGIN_OWNER" --chmod=D0755,F0644 "$CONFIG_DIR/plugins/" "$WEBROOT/"
+fi
+
+if is_true "$MOODLE_ALLOW_WEB_PLUGIN_INSTALL"; then
+    manifest=/usr/local/lib/moodle/core-plugins.txt
+    if [[ -s "$manifest" ]]; then
+        # Only the plugin *type* directories (mod, blocks, theme, admin/tool, ...)
+        # are made writable - derived from the parents of the core plugin list.
+        # Core plugin folders themselves stay root-owned, so a compromised PHP
+        # process still cannot overwrite Moodle's own code.
+        log "Web plugin installation enabled: making plugin type directories writable"
+        awk -F/ 'NF > 1 { sub(/\/[^\/]+$/, ""); print }' "$manifest" | sort -u \
+            | while read -r d; do
+                  [[ -d "$WEBROOT/$d" ]] && chown www-data:www-data "$WEBROOT/$d"
+              done
+        chown www-data:www-data "$WEBROOT"
+    else
+        warn "Core plugin manifest missing - rebuild the image to use web plugin installation"
+    fi
+fi
+
+# Plugin list cache must be rebuilt whenever the code tree may have changed.
+rm -f "$MOODLE_DATA/cache/core_component.php"
+rm -rf "$MOODLE_DATA/localcache"
+
+php /usr/local/lib/moodle/write-config.php || die "Failed to write config.php"
+
+# -----------------------------------------------------------------------------
+# Database bootstrap
+# -----------------------------------------------------------------------------
+TEMP_DB_PID=""
+stop_temp_db() {
+    if [[ -n "$TEMP_DB_PID" ]] && kill -0 "$TEMP_DB_PID" 2>/dev/null; then
+        log "Stopping bootstrap MariaDB"
+        mariadb-admin --protocol=socket -uroot shutdown >/dev/null 2>&1 || kill "$TEMP_DB_PID" 2>/dev/null || true
+        wait "$TEMP_DB_PID" 2>/dev/null || true
+    fi
+    TEMP_DB_PID=""
+}
+trap stop_temp_db EXIT
+
+mariadb_bootstrap() {
+    install -d -o mysql -g mysql -m 0755 /run/mysqld
+    if [[ "$(stat -c '%U' /var/lib/mysql)" != "mysql" ]]; then
+        chown -R mysql:mysql /var/lib/mysql
+    fi
+    if [[ ! -d /var/lib/mysql/mysql ]]; then
+        log "Initialising bundled MariaDB data directory"
+        mariadb-install-db --user=mysql --datadir=/var/lib/mysql \
+            --auth-root-authentication-method=socket --skip-test-db >/dev/null
+    fi
+
+    log "Starting bundled MariaDB (bootstrap)"
+    /usr/sbin/mariadbd --user=mysql &
+    TEMP_DB_PID=$!
+
+    local i
+    for i in $(seq 1 90); do
+        if mariadb-admin --protocol=socket -uroot --silent ping >/dev/null 2>&1; then break; fi
+        kill -0 "$TEMP_DB_PID" 2>/dev/null || die "MariaDB exited during startup - see messages above"
+        sleep 1
+    done
+    mariadb-admin --protocol=socket -uroot --silent ping >/dev/null 2>&1 || die "MariaDB was not ready after 90s"
+
+    mariadb-upgrade --silent >/dev/null 2>&1 || warn "mariadb-upgrade reported a problem"
+
+    local user pass
+    user="$(sql_quote "$MOODLE_DB_USER")"
+    pass="$(sql_quote "$MOODLE_DB_PASSWORD")"
+    mariadb --protocol=socket -uroot <<SQL
+CREATE DATABASE IF NOT EXISTS \`${MOODLE_DB_NAME}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS ${user}@'localhost' IDENTIFIED BY ${pass};
+CREATE USER IF NOT EXISTS ${user}@'127.0.0.1' IDENTIFIED BY ${pass};
+ALTER USER ${user}@'localhost' IDENTIFIED BY ${pass};
+ALTER USER ${user}@'127.0.0.1' IDENTIFIED BY ${pass};
+GRANT ALL PRIVILEGES ON \`${MOODLE_DB_NAME}\`.* TO ${user}@'localhost';
+GRANT ALL PRIVILEGES ON \`${MOODLE_DB_NAME}\`.* TO ${user}@'127.0.0.1';
+FLUSH PRIVILEGES;
+SQL
+}
+
+# Exit codes of db-check.php: 0 installed, 1 empty, 2 unreachable, 3 partial install.
+DB_STATE=2
+wait_for_db() {
+    local waited=0 rc
+    while true; do
+        rc=0
+        php /usr/local/lib/moodle/db-check.php || rc=$?
+        if [[ $rc -ne 2 ]]; then DB_STATE=$rc; return 0; fi
+        if (( waited >= MOODLE_DB_WAIT_TIMEOUT )); then
+            die "Could not connect to $MOODLE_DB_TYPE at $MOODLE_DB_HOST:$MOODLE_DB_PORT after ${MOODLE_DB_WAIT_TIMEOUT}s"
+        fi
+        if (( waited % 15 == 0 )); then log "Waiting for database at $MOODLE_DB_HOST:$MOODLE_DB_PORT..."; fi
+        sleep 3
+        waited=$(( waited + 3 ))
+    done
+}
+
+# Run Moodle CLI as www-data. MOODLE_BOOTSTRAP makes config.php skip Redis
+# sessions, because Redis is not running yet at this stage.
+moodle_php() { run_as_www env MOODLE_BOOTSTRAP=1 php "$@"; }
+
+install_moodle() {
+    local admin_pass="$MOODLE_ADMIN_PASSWORD"
+    if [[ -z "$admin_pass" ]]; then
+        admin_pass="$(ensure_secret admin_password)"
+        log "No MOODLE_ADMIN_PASSWORD given: the generated password is in $CONFIG_DIR/secrets/admin_password"
+    fi
+    log "Installing Moodle $(moodle_release) - this usually takes 2-10 minutes"
+    moodle_php "$CLI/install_database.php" \
+        --agree-license \
+        --lang="$MOODLE_LANG" \
+        --adminuser="$MOODLE_ADMIN_USER" \
+        --adminpass="$admin_pass" \
+        --adminemail="$MOODLE_ADMIN_EMAIL" \
+        --fullname="$MOODLE_SITE_FULLNAME" \
+        --shortname="$MOODLE_SITE_SHORTNAME" \
+        --summary="$MOODLE_SITE_SUMMARY"
+    moodle_php "$CLI/cfg.php" --name=supportemail --set="$MOODLE_SUPPORT_EMAIL" >/dev/null \
+        || warn "Could not set supportemail - set it under Site administration > Server > Support contact"
+    log "Installation complete. Log in at $MOODLE_URL as '$MOODLE_ADMIN_USER'"
+}
+
+upgrade_moodle() {
+    local rc=0
+    moodle_php "$CLI/upgrade.php" --is-pending >/dev/null 2>&1 || rc=$?
+    case $rc in
+        0) log "Moodle database is up to date" ;;
+        2)
+            if is_true "$MOODLE_AUTO_UPGRADE"; then
+                log "Upgrade pending (new Moodle version or plugins) - running upgrade.php"
+                moodle_php "$CLI/upgrade.php" --non-interactive
+                log "Upgrade complete"
+            else
+                warn "An upgrade is pending. Run 'moodle-cli upgrade.php' or log in as admin to complete it"
+            fi
+            ;;
+        *) warn "Could not determine upgrade status (upgrade.php exit code $rc), continuing" ;;
+    esac
+}
+
+if [[ "$USE_INTERNAL_DB" == true ]]; then
+    mariadb_bootstrap
+fi
+
+wait_for_db
+case "$DB_STATE" in
+    0) upgrade_moodle ;;
+    1) install_moodle ;;
+    3) die "Database '$MOODLE_DB_NAME' contains a partial Moodle install (tables present but no version). Restore a backup or empty the database, then restart." ;;
+    *) die "Unexpected database state $DB_STATE" ;;
+esac
+
+stop_temp_db
+trap - EXIT
+
+# -----------------------------------------------------------------------------
+# Services
+# -----------------------------------------------------------------------------
+rm -f /etc/supervisor/conf.d/*.conf
+enable_program() { ln -sf "/etc/supervisor/available/$1.conf" "/etc/supervisor/conf.d/$1.conf"; }
+if [[ "$USE_INTERNAL_DB" == true ]]; then enable_program mariadb; fi
+if [[ "$USE_INTERNAL_REDIS" == true ]]; then enable_program redis; fi
+enable_program php-fpm
+enable_program nginx
+if is_true "$MOODLE_CRON_ENABLED"; then enable_program cron; fi
+if is_true "$MOODLE_ALLOW_WEB_PLUGIN_INSTALL"; then enable_program plugin-sync; fi
+
+log "Starting services - Moodle will be available at $MOODLE_URL"
+exec /usr/bin/supervisord -n -c /etc/supervisor/supervisord.conf

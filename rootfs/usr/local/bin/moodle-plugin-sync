@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# =============================================================================
+#  moodle-plugin-sync
+#
+#  Keeps /config/plugins in step with add-on plugins in the code tree, so
+#  anything installed through Moodle's web interface survives an image update
+#  (the code tree lives in the image and is rebuilt on every update).
+#
+#    moodle-plugin-sync --once    run one pass and exit
+#    moodle-plugin-sync           run continuously (started by supervisord)
+#
+#  A plugin is any directory containing version.php. Directories listed in the
+#  build-time core manifest are ignored; everything else is an add-on.
+# =============================================================================
+set -uo pipefail
+# shellcheck source=/usr/local/lib/moodle/common.sh
+source /usr/local/lib/moodle/common.sh
+
+MANIFEST=/usr/local/lib/moodle/core-plugins.txt
+STORE="$CONFIG_DIR/plugins"
+INTERVAL="${MOODLE_PLUGIN_SYNC_INTERVAL:-300}"
+WEBROOT="$(moodle_webroot)"
+
+# Lists plugin directories (relative paths) under a tree.
+list_plugins() {
+    local root="$1"
+    [[ -d "$root" ]] || return 0
+    ( cd "$root" && find . -mindepth 2 -name version.php -type f -printf '%P\n' 2>/dev/null ) \
+        | sed 's|/version\.php$||' | sort -u
+}
+
+sync_once() {
+    if [[ ! -f "$WEBROOT/version.php" ]]; then
+        log "plugin-sync: code tree not ready, skipping this pass"
+        return 0
+    fi
+    if [[ ! -s "$MANIFEST" ]]; then
+        log "plugin-sync: core manifest $MANIFEST is missing - rebuild the image"
+        return 1
+    fi
+    mkdir -p "$STORE"
+
+    # --- Save add-ons found in the code tree but not shipped with core --------
+    local rel out saved=0
+    while read -r rel; do
+        [[ -n "$rel" ]] || continue
+        mkdir -p "$STORE/$(dirname "$rel")"
+        out="$(rsync -rlt --delete --itemize-changes --exclude='.git' \
+                    "$WEBROOT/$rel/" "$STORE/$rel/" 2>&1)"
+        if [[ -n "$out" ]]; then
+            log "plugin-sync: saved $rel to $STORE"
+            saved=$(( saved + 1 ))
+        fi
+    done < <(comm -13 "$MANIFEST" <(list_plugins "$WEBROOT"))
+
+    # --- Forget add-ons that were uninstalled through the web interface -------
+    # Without this they would be copied back in on the next container start.
+    local removed=0
+    while read -r rel; do
+        [[ -n "$rel" ]] || continue
+        if [[ ! -f "$WEBROOT/$rel/version.php" ]]; then
+            log "plugin-sync: $rel is no longer installed - removing it from $STORE"
+            rm -rf "${STORE:?}/$rel"
+            rmdir -p "$(dirname "$STORE/$rel")" 2>/dev/null || true
+            removed=$(( removed + 1 ))
+        fi
+    done < <(list_plugins "$STORE")
+
+    if [[ "${1:-}" == "--verbose" && $saved -eq 0 && $removed -eq 0 ]]; then
+        log "plugin-sync: nothing to do"
+    fi
+    return 0
+}
+
+if [[ "${1:-}" == "--once" ]]; then
+    sync_once --verbose
+    exit $?
+fi
+
+# Daemon mode: sync periodically, and once more on shutdown so a plugin
+# installed seconds before `docker stop` is not lost.
+sleep_pid=""
+on_term() {
+    # Stop the pending sleep, otherwise it outlives this script and holds the
+    # container's log pipe open.
+    [[ -n "$sleep_pid" ]] && kill "$sleep_pid" 2>/dev/null
+    log "plugin-sync: shutting down, running a final sync"
+    sync_once
+    exit 0
+}
+trap on_term TERM INT
+
+log "plugin-sync: watching for web-installed plugins every ${INTERVAL}s"
+while true; do
+    sync_once
+    # Sleep in the background so the TERM trap fires immediately.
+    sleep "$INTERVAL" & sleep_pid=$!
+    wait "$sleep_pid" 2>/dev/null
+    sleep_pid=""
+done
