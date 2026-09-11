@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>Moodle</Name>
-  <Repository>ghcr.io/YOUR_GITHUB_USER/moodle-aio:latest</Repository>
-  <Registry>https://github.com/YOUR_GITHUB_USER/moodle-aio/pkgs/container/moodle-aio</Registry>
+  <Repository>ghcr.io/mopishhobgoblin/potential-octo-fiesta:main</Repository>
+  <Registry>https://github.com/MopishHobgoblin/potential-octo-fiesta/pkgs/container/moodle-aio</Registry>
   <Network>bridge</Network>
   <MyIP/>
   <Shell>bash</Shell>
@@ -17,7 +17,7 @@ REVERSE PROXY: use an https:// MOODLE_URL and SSL proxy mode switches on automat
   <Category>Productivity: Tools:</Category>
   <WebUI>http://[IP]:[PORT:80]/</WebUI>
   <TemplateURL/>
-  <Icon>https://download.moodle.org/theme/moodleorg/pix/favicons/favicon-270.png</Icon>
+  <Icon>https://raw.githubusercontent.com/A75G/docker-templates/master/templates/icons/moodle.png</Icon>
   <ExtraParams>--stop-timeout=120</ExtraParams>
   <PostArgs/>
   <CPUset/>
