@@ -15,10 +15,13 @@ FROM composer:2 AS composer
 
 FROM php:${PHP_VERSION}-fpm-trixie
 
-# Latest stable release at the time of writing: Moodle 5.2.2 (10 Aug 2026).
-ARG MOODLE_VERSION=5.1.6
-ARG MOODLE_BRANCH=501
-ARG MOODLE_DOWNLOAD_URL=https://download.moodle.org/download.php/direct/stable${MOODLE_BRANCH}/moodle-${MOODLE_VERSION}.tgz
+# Current stable release: 5.2.2 (branch 502). The 5.1 branch is also supported:
+# build with MOODLE_VERSION=5.1.6 and MOODLE_BRANCH=501.
+# MOODLE_BRANCH is the version without the dot, and must match MOODLE_VERSION.
+ARG MOODLE_VERSION=5.2.2
+ARG MOODLE_BRANCH=502
+# Optional: a full URL to a .tgz, overriding the download.moodle.org package.
+ARG MOODLE_DOWNLOAD_URL=
 
 LABEL org.opencontainers.image.title="Moodle AIO" \
       org.opencontainers.image.description="Self-contained Moodle LMS: nginx, PHP-FPM, MariaDB, Redis and cron in one container" \
@@ -40,7 +43,7 @@ RUN set -eux; \
         nginx supervisor \
         mariadb-server mariadb-client \
         redis-server \
-        ca-certificates curl rsync unzip locales tzdata \
+        ca-certificates curl git rsync unzip locales tzdata \
         ghostscript poppler-utils graphviz aspell aspell-en; \
     sed -i -e 's/^# *\(en_US.UTF-8 UTF-8\)/\1/' -e 's/^# *\(en_AU.UTF-8 UTF-8\)/\1/' /etc/locale.gen; \
     locale-gen; \
@@ -53,8 +56,13 @@ RUN set -eux; \
             echo "All required PHP extensions present\n";'
 
 # --- Moodle code --------------------------------------------------------------
+# The build args are passed as environment variables so the script fails with a
+# clear message if one is empty, instead of silently building a broken URL.
 COPY build/fetch-moodle.sh /usr/local/lib/moodle/build/fetch-moodle.sh
-RUN bash /usr/local/lib/moodle/build/fetch-moodle.sh "${MOODLE_DOWNLOAD_URL}"
+RUN MOODLE_VERSION="${MOODLE_VERSION}" \
+    MOODLE_BRANCH="${MOODLE_BRANCH}" \
+    MOODLE_DOWNLOAD_URL="${MOODLE_DOWNLOAD_URL}" \
+    bash /usr/local/lib/moodle/build/fetch-moodle.sh
 
 # --- Base system tweaks -------------------------------------------------------
 # * www-data's home is moved away from /var/www, otherwise `usermod -u` (PUID)

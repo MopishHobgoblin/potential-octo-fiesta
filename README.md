@@ -4,7 +4,7 @@ One container, everything Moodle needs:
 
 | Component | Version / notes |
 |---|---|
-| Moodle LMS | **5.2.2** (official release package, SHA-256 verified at build) |
+| Moodle LMS | **5.2.2** (official package, SHA-256 verified; 5.1.6 also supported) |
 | PHP-FPM | 8.3 (build arg `PHP_VERSION=8.4` also supported by Moodle 5.2) |
 | Web server | nginx, web root `public/`, Moodle Router and X-Accel-Redirect configured |
 | Database | MariaDB 11.8 (Debian trixie) — or point at an external MariaDB/MySQL/PostgreSQL |
@@ -133,7 +133,7 @@ On start they are copied into the code tree and `upgrade.php` installs them. To 
 
 ## Upgrading Moodle
 
-1. Change `MOODLE_VERSION` (and `MOODLE_BRANCH` for a new major, e.g. `503` for 5.3).
+1. Change `MOODLE_VERSION` and `MOODLE_BRANCH` together — the branch is the version without the dot, so 5.2.2 → `502`, 5.1.6 → `501`, 5.3.0 → `503`. Both are listed on <https://download.moodle.org/releases/>.
 2. Update any add-on plugins in `/config/plugins` to versions compatible with the new release.
 3. Back up (below), then rebuild: `docker compose up -d --build` — or push a new image and click *Update* on Unraid.
 
@@ -171,10 +171,26 @@ Moodle 5.2's environment page checks that the Router works by requesting your ow
 
 Set `MOODLE_DB_HOST` to your server and provide `MOODLE_DB_TYPE`, `MOODLE_DB_NAME`, `MOODLE_DB_USER` and `MOODLE_DB_PASSWORD`. The bundled MariaDB is then not started. Moodle 5.2 needs MariaDB ≥ 10.11, MySQL ≥ 8.4 or PostgreSQL ≥ 16. Create the database with `utf8mb4_unicode_ci` (MySQL/MariaDB) or UTF8 encoding (PostgreSQL).
 
+## Build troubleshooting
+
+`docker buildx` only prints a one-line summary when a step fails. To see the real error:
+
+```bash
+docker compose build --progress=plain --no-cache
+```
+
+The Moodle download step prints every source it tries and why each one failed. If
+download.moodle.org is unreachable or rate-limited, the build falls back to the
+official GitHub mirror and then to a shallow `git clone` of the release tag, so a
+single flaky source no longer breaks the build. To use a package you host yourself:
+
+```bash
+docker build --build-arg MOODLE_DOWNLOAD_URL=https://example.com/moodle-5.2.2.tgz -t moodle-aio .
+```
+
 ## Troubleshooting
 
 - **Redirect loop / "incorrect access" warning:** `MOODLE_URL` doesn't match the browser address, or you're behind HTTPS without `MOODLE_SSLPROXY`.
 - **"Partial Moodle install" on start:** a previous first install was interrupted. Empty the database (or delete the `mysql` folder for the bundled DB) and restart.
 - **Cron errors:** set `MOODLE_CRON_VERBOSE=true`, or read `/tmp/moodle-cron-last.log` inside the container.
 - **Big uploads fail:** raise `PHP_UPLOAD_MAX_FILESIZE`, and the limit in any reverse proxy in front.
-# potential-octo-fiesta

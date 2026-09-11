@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>Moodle</Name>
-  <Repository>ghcr.io/MopishHobgoblin/moodle-aio:latest</Repository>
-  <Registry>https://github.com/MopishHobgoblin/moodle-aio/pkgs/container/moodle-aio</Registry>
+  <Repository>ghcr.io/YOUR_GITHUB_USER/moodle-aio:latest</Repository>
+  <Registry>https://github.com/YOUR_GITHUB_USER/moodle-aio/pkgs/container/moodle-aio</Registry>
   <Network>bridge</Network>
   <MyIP/>
   <Shell>bash</Shell>
