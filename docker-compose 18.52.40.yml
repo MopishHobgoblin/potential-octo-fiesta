@@ -1,0 +1,83 @@
+# =============================================================================
+#  Moodle all-in-one - Docker Compose
+#  1. cp .env.example .env   and set at least MOODLE_URL
+#  2. docker compose up -d --build
+#  3. docker compose logs -f   (first start installs Moodle: 2-10 minutes)
+# =============================================================================
+name: moodle
+
+services:
+  moodle:
+    build:
+      context: .
+      args:
+        MOODLE_VERSION: ${MOODLE_VERSION:-5.2.2}
+        MOODLE_BRANCH: ${MOODLE_BRANCH:-502}
+        PHP_VERSION: ${PHP_VERSION:-8.3}
+    image: ${MOODLE_IMAGE:-moodle-aio}:${MOODLE_VERSION:-5.2.2}
+    container_name: moodle
+    restart: unless-stopped
+    # Give MariaDB time to shut down cleanly.
+    stop_grace_period: 2m
+    ports:
+      - "${MOODLE_HTTP_PORT:-8080}:80"
+    environment:
+      TZ: ${TZ:-UTC}
+      PUID: ${PUID:-}
+      PGID: ${PGID:-}
+
+      # Site
+      MOODLE_URL: ${MOODLE_URL:?Set MOODLE_URL in .env, e.g. http://192.168.1.50:8080}
+      MOODLE_SSLPROXY: ${MOODLE_SSLPROXY:-auto}
+      MOODLE_SITE_FULLNAME: ${MOODLE_SITE_FULLNAME:-Moodle LMS}
+      MOODLE_SITE_SHORTNAME: ${MOODLE_SITE_SHORTNAME:-Moodle}
+      MOODLE_LANG: ${MOODLE_LANG:-en}
+      MOODLE_ADMIN_USER: ${MOODLE_ADMIN_USER:-admin}
+      MOODLE_ADMIN_PASSWORD: ${MOODLE_ADMIN_PASSWORD:-}
+      MOODLE_ADMIN_EMAIL: ${MOODLE_ADMIN_EMAIL:-admin@example.com}
+      MOODLE_SUPPORT_EMAIL: ${MOODLE_SUPPORT_EMAIL:-}
+      MOODLE_AUTO_UPGRADE: ${MOODLE_AUTO_UPGRADE:-true}
+      MOODLE_UPGRADE_KEY: ${MOODLE_UPGRADE_KEY:-}
+
+      # Database (defaults = bundled MariaDB)
+      MOODLE_DB_TYPE: ${MOODLE_DB_TYPE:-mariadb}
+      MOODLE_DB_HOST: ${MOODLE_DB_HOST:-127.0.0.1}
+      MOODLE_DB_PORT: ${MOODLE_DB_PORT:-}
+      MOODLE_DB_NAME: ${MOODLE_DB_NAME:-moodle}
+      MOODLE_DB_USER: ${MOODLE_DB_USER:-moodle}
+      MOODLE_DB_PASSWORD: ${MOODLE_DB_PASSWORD:-}
+      MOODLE_DB_PREFIX: ${MOODLE_DB_PREFIX:-mdl_}
+      MARIADB_INNODB_BUFFER_POOL_SIZE: ${MARIADB_INNODB_BUFFER_POOL_SIZE:-512M}
+
+      # Redis sessions (defaults = bundled Redis)
+      MOODLE_REDIS_ENABLED: ${MOODLE_REDIS_ENABLED:-true}
+      MOODLE_REDIS_HOST: ${MOODLE_REDIS_HOST:-127.0.0.1}
+      REDIS_MAXMEMORY: ${REDIS_MAXMEMORY:-256mb}
+
+      # Mail
+      MOODLE_SMTP_HOST: ${MOODLE_SMTP_HOST:-}
+      MOODLE_SMTP_SECURE: ${MOODLE_SMTP_SECURE:-}
+      MOODLE_SMTP_USER: ${MOODLE_SMTP_USER:-}
+      MOODLE_SMTP_PASSWORD: ${MOODLE_SMTP_PASSWORD:-}
+      MOODLE_NOREPLY_ADDRESS: ${MOODLE_NOREPLY_ADDRESS:-}
+
+      # PHP / web server
+      PHP_MEMORY_LIMIT: ${PHP_MEMORY_LIMIT:-512M}
+      PHP_UPLOAD_MAX_FILESIZE: ${PHP_UPLOAD_MAX_FILESIZE:-256M}
+      PHP_MAX_EXECUTION_TIME: ${PHP_MAX_EXECUTION_TIME:-300}
+      PHP_FPM_MAX_CHILDREN: ${PHP_FPM_MAX_CHILDREN:-20}
+      NGINX_ACCESS_LOG: ${NGINX_ACCESS_LOG:-false}
+
+      # Cron
+      MOODLE_CRON_ENABLED: ${MOODLE_CRON_ENABLED:-true}
+      MOODLE_CRON_VERBOSE: ${MOODLE_CRON_VERBOSE:-false}
+      MOODLE_DEBUG: ${MOODLE_DEBUG:-false}
+    volumes:
+      - moodle_config:/config                 # plugins/, secrets/, config.extra.php
+      - moodle_data:/var/www/moodledata       # uploaded files, caches, language packs
+      - moodle_db:/var/lib/mysql              # bundled MariaDB
+
+volumes:
+  moodle_config:
+  moodle_data:
+  moodle_db:

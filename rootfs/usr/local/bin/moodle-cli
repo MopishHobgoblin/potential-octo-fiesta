@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Run a Moodle admin CLI script as the web server user.
+#   docker exec -it moodle moodle-cli purge_caches.php
+#   docker exec -it moodle moodle-cli maintenance.php --enable
+#   docker exec -it moodle moodle-cli reset_password.php
+set -euo pipefail
+# shellcheck source=/usr/local/lib/moodle/common.sh
+source /usr/local/lib/moodle/common.sh
+
+cli="$(moodle_cli_dir)" || die "admin/cli not found under $MOODLE_ROOT"
+
+if [[ $# -lt 1 ]]; then
+    echo "Usage: moodle-cli <script>[.php] [arguments...]"
+    echo "Available scripts in $cli:"
+    ls "$cli" | grep '\.php$' | sed 's/^/  /'
+    exit 1
+fi
+
+script="$1"; shift
+[[ "$script" == *.php ]] || script="$script.php"
+[[ -f "$cli/$script" ]] || die "No such CLI script: $cli/$script"
+
+if [[ "$(id -u)" -eq 0 ]]; then
+    exec setpriv --reuid=www-data --regid=www-data --init-groups -- php "$cli/$script" "$@"
+fi
+exec php "$cli/$script" "$@"
