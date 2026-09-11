@@ -16,8 +16,8 @@ FROM composer:2 AS composer
 FROM php:${PHP_VERSION}-fpm-trixie
 
 # Latest stable release at the time of writing: Moodle 5.2.2 (10 Aug 2026).
-ARG MOODLE_VERSION=5.2.2
-ARG MOODLE_BRANCH=502
+ARG MOODLE_VERSION=5.1.6
+ARG MOODLE_BRANCH=501
 ARG MOODLE_DOWNLOAD_URL=https://download.moodle.org/download.php/direct/stable${MOODLE_BRANCH}/moodle-${MOODLE_VERSION}.tgz
 
 LABEL org.opencontainers.image.title="Moodle AIO" \
