@@ -1,3 +1,0 @@
-#!/usr/bin/env bash
-# Healthy when nginx answers and PHP-FPM responds to its ping endpoint.
-exec curl -fsS -o /dev/null --max-time 8 http://127.0.0.1/fpm-ping
