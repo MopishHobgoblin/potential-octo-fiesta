@@ -25,9 +25,9 @@ ARG MOODLE_BRANCH=502
 # Moodle point releases one for one and are tagged MuTMS-<version>-NN.
 ARG MOODLE_DISTRIBUTION=mutms
 # Optional: pin an exact MuTMS tag, e.g. MuTMS-5.2.2-02. Blank = MuTMS-<version>-01.
-ARG MUTMS_TAG=
+ARG MUTMS_TAG=MuTMS-5.2.2-02
 # Optional: a full URL to a .tgz, overriding everything above.
-ARG MOODLE_DOWNLOAD_URL=
+ARG MOODLE_DOWNLOAD_URL=https://github.com/mutms/mutms/archive/refs/tags/{$(MUTMS_TAG)}.tar.gz
 
 LABEL org.opencontainers.image.title="Moodle AIO" \
       org.opencontainers.image.description="Self-contained Moodle LMS (${MOODLE_DISTRIBUTION} distribution): nginx, PHP-FPM, MariaDB, Redis and cron in one container" \
