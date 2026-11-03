@@ -11,14 +11,14 @@ services:
     build:
       context: .
       args:
-        MOODLE_VERSION: ${MOODLE_VERSION:-5.2.2}
-        MOODLE_BRANCH: ${MOODLE_BRANCH:-502}
+        MOODLE_VERSION: ${MOODLE_VERSION:-5.3.0}
+        MOODLE_BRANCH: ${MOODLE_BRANCH:-503}
         # mutms = MuTMS distribution (multi-tenancy, programs, certifications).
         # moodle = plain upstream Moodle.
         MOODLE_DISTRIBUTION: ${MOODLE_DISTRIBUTION:-mutms}
         MUTMS_TAG: ${MUTMS_TAG:-}
         PHP_VERSION: ${PHP_VERSION:-8.3}
-    image: ${MOODLE_IMAGE:-moodle-aio}:${MOODLE_VERSION:-5.2.2}-${MOODLE_DISTRIBUTION:-mutms}
+    image: ${MOODLE_IMAGE:-moodle-aio}:${MOODLE_VERSION:-5.3.0}-${MOODLE_DISTRIBUTION:-mutms}
     container_name: moodle
     restart: unless-stopped
     # Give MariaDB time to shut down cleanly.
