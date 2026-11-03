@@ -18,8 +18,8 @@ FROM php:${PHP_VERSION}-fpm-trixie
 # Current stable release: 5.2.2 (branch 502). The 5.1 branch is also supported:
 # build with MOODLE_VERSION=5.1.6 and MOODLE_BRANCH=501.
 # MOODLE_BRANCH is the version without the dot, and must match MOODLE_VERSION.
-ARG MOODLE_VERSION=5.2.2
-ARG MOODLE_BRANCH=502
+ARG MOODLE_VERSION=5.3.0
+ARG MOODLE_BRANCH=503
 # moodle = standard Moodle. mutms = the MuTMS distribution (Moodle plus the
 # multi-tenancy core patch and the MuTMS plugin suite), whose releases track
 # Moodle point releases one for one and are tagged MuTMS-<version>-NN.
