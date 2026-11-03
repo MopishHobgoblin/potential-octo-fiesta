@@ -25,7 +25,7 @@ ARG MOODLE_BRANCH=503
 # Moodle point releases one for one and are tagged MuTMS-<version>-NN.
 ARG MOODLE_DISTRIBUTION=mutms
 # Optional: pin an exact MuTMS tag, e.g. MuTMS-5.2.2-02. Blank = MuTMS-<version>-01.
-ARG MUTMS_TAG=v5.2.4.01
+ARG MUTMS_TAG=MuTMS-5.2.4-01
 # Optional: a full URL to a .tgz, overriding everything above.
 ARG MOODLE_DOWNLOAD_URL=https://github.com/mutms/mutms/archive/refs/tags/{$(MUTMS_TAG)}.tar.gz
 
